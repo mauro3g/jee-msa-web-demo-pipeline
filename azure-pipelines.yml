@@ -146,11 +146,43 @@ stages:
             displayName: 'Descarga CLI, Login y Despliegue Docker'
 
   # ==========================================
-  # STAGE 4: NOTIFICACIONES (NOTIFICATIONS)
+  # STAGE 4: HEALTH CHECK POST DESPLIEGUE
+  # ==========================================
+  - stage: HealthCheck
+    displayName: 'Verificar'
+    dependsOn: CD
+    condition: succeeded()
+    jobs:
+      - job: health_check
+        displayName: 'Health Check'
+        steps:
+          - script: |
+              curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar -xz oc
+              sudo mv oc /usr/local/bin/
+              oc login --token=$(OPENSHIFT_TOKEN) --server=$(OPENSHIFT_SERVER) --insecure-skip-tls-verify=true
+              HOST=$(oc get route jee-msa-web-demo-pipeline -n m3gx14-dev -o jsonpath='{.spec.host}')
+              URL="http://$HOST/api/status"
+              echo "Verificando $URL"
+              for i in $(seq 1 10); do
+                code=$(curl -s -o response.json -w "%{http_code}" "$URL" || true)
+                echo "Intento $i: HTTP $code - $(cat response.json 2>/dev/null)"
+                if [ "$code" = "200" ] && grep -q '"status":"UP"' response.json; then
+                  echo "Aplicación saludable"
+                  exit 0
+                fi
+                sleep 10
+              done
+              echo "La aplicación no respondió HTTP 200 con status UP"
+              oc get pods -n m3gx14-dev
+              exit 1
+            displayName: 'Probar endpoint desplegado'
+
+  # ==========================================
+  # STAGE 5: NOTIFICACIONES (NOTIFICATIONS)
   # ==========================================
   - stage: Notifications
     displayName: 'Notificar'
-    dependsOn: [CI, Approval, CD]
+    dependsOn: [CI, Approval, CD, HealthCheck]
     condition: always()
     jobs:
       - job: send_status_email
